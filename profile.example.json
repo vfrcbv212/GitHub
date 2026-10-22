@@ -1,0 +1,11 @@
+{
+  "team": [{"id":"A","name":"Команда А"},{"id":"B","name":"Команда Б"}],
+  "player": [
+    {"id":"A-7","team_id":"A","number":7,"name":null,"role":"unknown"},
+    {"id":"B-7","team_id":"B","number":7,"name":null,"role":"libero"},
+    {"id":"A-person-1","team_id":"A","number":null,"label":"Игрок без номера","name":null,"role":"unknown"}
+  ],
+  "set": [{"id":"set-1","number":1}],
+  "lineup": [],
+  "side": []
+}

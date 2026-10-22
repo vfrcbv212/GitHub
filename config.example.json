@@ -1,0 +1,15 @@
+{
+  "device": "auto",
+  "identity_mode": "hybrid",
+  "people_fps": 5,
+  "ball_fps": 15,
+  "person_threshold": 0.65,
+  "ball_threshold": 0.25,
+  "ball_tiled": true,
+  "ball_tile": 768,
+  "ball_overlap": 0.2,
+  "ocr": true,
+  "ocr_interval": 0.5,
+  "people_max_gap": 0.4,
+  "ball_max_gap": 0.15
+}

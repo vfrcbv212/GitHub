@@ -1,0 +1,14 @@
+# CPU pilot; QtWidgets is supplied by Essentials, no unused WebEngine/PDF.
+torch==2.13.0
+torchvision==0.28.0
+numpy==1.26.4
+opencv-python-headless==4.11.0.86
+av==19.0.2
+PySide6_Essentials==6.8.3
+shiboken6==6.8.3
+openpyxl==3.1.5
+psutil==7.2.2
+scipy==1.17.0
+norfair==2.3.0
+imageio-ffmpeg==0.6.0
+easyocr==1.7.2

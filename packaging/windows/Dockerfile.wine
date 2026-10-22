@@ -1,0 +1,6 @@
+FROM debian:trixie-slim
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    wine wine64 xvfb xauth gcc-mingw-w64-x86-64-posix ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+ENV WINEDEBUG=-all WINEARCH=win64 WINEPREFIX=/build/wine-prefix LANG=C.UTF-8
+WORKDIR /build
