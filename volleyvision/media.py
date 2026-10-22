@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import queue
 import shutil
 import subprocess
@@ -78,12 +79,49 @@ class VideoFrame:
     rgb: np.ndarray
 
 
+def decode_threads():
+    """Bound decoder workers; leave CPU room for inference and the interface."""
+    return max(1,min(6,(os.cpu_count() or 2)//2))
+
+
+def prefetch_frames(iterable, depth=2, cancel=None):
+    """Overlap decoding and inference with bounded RAM and deterministic order."""
+    if not 1<=depth<=4:raise ValueError('Prefetch depth must be 1–4')
+    pending=queue.Queue(maxsize=depth);stop=threading.Event()
+    def put(kind,value):
+        while not stop.is_set():
+            try:pending.put((kind,value),timeout=.05);return
+            except queue.Full:continue
+    def produce():
+        try:
+            for item in iterable:
+                if stop.is_set():break
+                put('frame',item)
+        except BaseException as exc:put('error',exc)
+        finally:
+            close=getattr(iterable,'close',None)
+            if close:close()
+            put('end',None)
+    worker=threading.Thread(target=produce,name='VolleyVision decode',daemon=True);worker.start()
+    try:
+        while True:
+            check_cancel(cancel)
+            try:kind,value=pending.get(timeout=.05)
+            except queue.Empty:continue
+            if kind=='error':raise value
+            if kind=='end':break
+            yield value
+    finally:
+        stop.set();worker.join(timeout=2)
+
+
 def frames(path, metadata=None, start=0, end=float("inf"), sample_fps=None):
     """Sequential decode, at most one decoded frame retained. Time is actual PTS."""
     metadata = metadata or probe(path)
     origin = metadata["first_time"]
     with av.open(str(path)) as c:
         s = c.streams.video[0]
+        s.thread_type='AUTO';s.thread_count=decode_threads()
         if start > 0:
             c.seek(int((origin + start) / float(s.time_base)), stream=s, backward=True)
         next_sample = start
@@ -134,6 +172,7 @@ def index_video(project, source, progress=None, cancel=None):
     batch = []
     with av.open(str(path)) as c:
         s = c.streams.video[0]
+        s.thread_type='AUTO';s.thread_count=decode_threads()
         count = 0
         for i, f in enumerate(c.decode(s)):
             check_cancel(cancel)

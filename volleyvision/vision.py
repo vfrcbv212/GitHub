@@ -14,10 +14,11 @@ from . import __version__
 from .calibration import CameraGuard, validate_profile, within
 from .domain import event, uid
 from .identity import NumberOCR, appearance, consensus, second_pass, torso
-from .media import Cancelled, check_cancel, frames, sha256
+from .media import Cancelled, check_cancel, frames, prefetch_frames, sha256
 from .models import choose_device, verify
 from .store import dumps
 from .image_io import read_image,write_image
+from .scene_setup import TeamMemory,MainBall,validate_scene
 
 DEFAULTS = {"people_fps": 5, "ball_fps": 15, "person_threshold": 0.65, "ball_threshold": 0.25,
             "ball_tile": 768, "ball_overlap": 0.2, "ball_tiled": True, "ocr": True,
@@ -52,24 +53,55 @@ class Detector:
             vector=torch.nn.functional.normalize(vector,dim=0)
         return vector.cpu().tolist()
 
-    def predict(self, rgb, threshold=0.25, classes=(1, 37)):
+    def predict_many(self, images, threshold=0.25, classes=(1, 37), batch_size=1):
+        """Batch equal-sized images without reducing ball tile resolution.
+
+        Bound GPU memory and retry an OOM at a smaller batch. No image is dropped.
+        Images of different sizes are grouped separately, preserving the exact
+        resize policy of the original single-image detector.
+        """
         import torch
-        # The dedicated ball pass does not silently shrink every tile to 320 px.
-        if classes == (37,):
-            self.model.transform.min_size = (min(rgb.shape[:2]),)
-            self.model.transform.max_size = max(rgb.shape[:2])
-        else:
-            self.model.transform.min_size = (320,)
-            self.model.transform.max_size = 640
-        # COCO category IDs in TorchVision: person=1, sports ball=37.
-        tensor = torch.from_numpy(np.ascontiguousarray(rgb)).permute(2, 0, 1).float().div_(255).to(self.device)
-        with torch.inference_mode():
-            out = self.model([tensor])[0]
-        boxes = out["boxes"].cpu().numpy()
-        labels = out["labels"].cpu().numpy()
-        scores = out["scores"].cpu().numpy()
-        return [{"bbox": b.tolist(), "class_id": int(c), "score": float(s)}
-                for b, c, s in zip(boxes, labels, scores) if c in classes and s >= threshold]
+        result=[None]*len(images)
+        buckets={}
+        for i,rgb in enumerate(images):buckets.setdefault(rgb.shape[:2],[]).append(i)
+        for shape,indices in buckets.items():
+            self.model.transform.min_size=(min(shape),) if classes==(37,) else (320,)
+            self.model.transform.max_size=max(shape) if classes==(37,) else 640
+            limit=max(1,min(int(batch_size),len(indices)));offset=0
+            while offset<len(indices):
+                selected=indices[offset:offset+limit]
+                tensors=[torch.from_numpy(np.ascontiguousarray(images[i])).permute(2,0,1)
+                         .to(device=self.device,dtype=torch.float32).div_(255) for i in selected]
+                try:
+                    with torch.inference_mode():outputs=self.model(tensors)
+                except torch.cuda.OutOfMemoryError:
+                    del tensors
+                    if self.device!='cuda' or len(selected)==1:raise
+                    torch.cuda.empty_cache();limit=max(1,len(selected)//2);continue
+                for i,out in zip(selected,outputs):
+                    boxes=out['boxes'].detach().float().cpu().numpy()
+                    labels=out['labels'].detach().cpu().numpy()
+                    scores=out['scores'].detach().float().cpu().numpy()
+                    result[i]=[{'bbox':b.tolist(),'class_id':int(c),'score':float(s)}
+                               for b,c,s in zip(boxes,labels,scores) if c in classes and s>=threshold]
+                del tensors,outputs
+                offset+=len(selected)
+        return result
+
+    def predict(self, rgb, threshold=0.25, classes=(1, 37)):
+        return self.predict_many([rgb],threshold,classes)[0]
+
+    def tile_batch_size(self, params):
+        requested=params.get('inference_batch')
+        if requested is not None:
+            if not isinstance(requested,int) or isinstance(requested,bool) or not 1<=requested<=8:
+                raise ValueError('Размер пакета должен быть 1–8')
+            return requested
+        if self.device!='cuda':return 1
+        import torch
+        free,_=torch.cuda.mem_get_info()
+        # Leave space for the model, OCR and display; OOM retries are still bounded.
+        return max(1,min(4,int(max(0,free-1024**3)//(800*1024**2))))
 
     def balls(self, rgb, params, polygon=None):
         if not params["ball_tiled"]:
@@ -83,19 +115,26 @@ class Detector:
         stride = max(64, int(size * (1 - params["ball_overlap"])))
         xs = sorted(set([*range(0, max(1, w - size + 1), stride), max(0, w - size)]))
         ys = sorted(set([*range(0, max(1, h - size + 1), stride), max(0, h - size)]))
-        found = []
+        found = [];tiles=[];origins=[]
+        bounds=cv2.boundingRect(np.asarray(polygon,np.float32)) if polygon else None
         for y in ys:
             for x in xs:
+                if bounds:
+                    bx,by,bw,bh=bounds
+                    if x+size<bx or x>bx+bw or y+size<by or y>by+bh:continue
                 crop = rgb[y:y+size, x:x+size]
-                for d in self.predict(crop, params["ball_threshold"], (37,)):
-                    b = d["bbox"]
-                    d["bbox"] = [b[0] + x, b[1] + y, b[2] + x, b[3] + y]
-                    center = [(d["bbox"][0] + d["bbox"][2])/2, (d["bbox"][1] + d["bbox"][3])/2]
-                    if not polygon or within(polygon, center):
-                        found.append(d)
+                tiles.append(crop);origins.append((x,y))
+        predictions=self.predict_many(tiles,params['ball_threshold'],(37,),self.tile_batch_size(params))
+        for (x,y),items in zip(origins,predictions):
+            for d in items:
+                b = d["bbox"]
+                d["bbox"] = [b[0] + x, b[1] + y, b[2] + x, b[3] + y]
+                center = [(d["bbox"][0] + d["bbox"][2])/2, (d["bbox"][1] + d["bbox"][3])/2]
+                if not polygon or within(polygon, center):
+                    found.append(d)
         if not found:
             return []
-        keep = nms(torch.tensor([d["bbox"] for d in found]), torch.tensor([d["score"] for d in found]), 0.4)
+        keep = nms(torch.tensor([d["bbox"] for d in found],dtype=torch.float32), torch.tensor([d["score"] for d in found]), 0.4)
         return [found[i] for i in keep.tolist()]
 
 
@@ -191,9 +230,14 @@ def analyze(project, source_id, config=None, progress=None, cancel=None, setup_o
                 "calibration_id":candidate_profile["id"],"reason":str(exc),"state":"invalid","time":candidate_profile.get("start",0)})
     fallback_profile = {"id":None,"source_id":source_id,"geometry":"video","verified":False}
     calibration = calibrations[-1] if calibrations else fallback_profile
+    scene=project.get('scene_setup',source_id)
+    if scene:
+        try:scene=validate_scene(scene,source)
+        except ValueError:scene=None
     model_info, _ = verify(project.root / "models", "detector")
     key_data = {"source": source["sha256"], "model": model_info["sha256"], "params": params,
                 "calibration": calibration, "calibration_profiles":calibrations, "code": __version__,"observations_contract":3}
+    if scene:key_data['scene_setup']=scene
     run_id = hashlib.sha256(dumps(key_data).encode()).hexdigest()[:24]
     job = project.get("job", run_id) or {"id": run_id, "source_id": source_id, "last_time": -1,
               "state": "new", "params": key_data, "samples": 0, "segments": 0}
@@ -214,6 +258,8 @@ def analyze(project, source_id, config=None, progress=None, cancel=None, setup_o
     end = min(source["duration"], params.get("setup_end", source["duration"])) if setup_only else source["duration"]
     trackers = Trackers(params, source["display_width"], source["display_height"], f"{run_id[:8]}s{job['segments']}")
     temporal = TemporalCandidates()
+    team_memory=TeamMemory(scene)
+    main_ball=MainBall(scene)
     people, last_people, last_guard = [], -1e9, -1e9
     guard = None
     geometry_ok = aligned = False
@@ -225,9 +271,12 @@ def analyze(project, source_id, config=None, progress=None, cancel=None, setup_o
     process = psutil.Process()
     max_ram = process.memory_info().rss
     ball_samples, ball_missing = job.get("ball_samples", 0), job.get("ball_missing", 0)
+    timings=dict(job.get('timings',{}));iteration_finished=time.perf_counter()
+    decoded=prefetch_frames(frames(path,decode_metadata,start=start,end=end,sample_fps=params['ball_fps']),cancel=cancel)
     try:
-        for frame in frames(path, decode_metadata, start=start, end=end, sample_fps=params["ball_fps"]):
+        for frame in decoded:
             check_cancel(cancel)
+            timings['decode_wait_s']=timings.get('decode_wait_s',0)+time.perf_counter()-iteration_finished
             rgb, t = frame.rgb, frame.time
             original_pts = project.db.execute("SELECT pts FROM frames WHERE source_id=? AND time>=? ORDER BY time LIMIT 1", (source_id,t-0.002)).fetchone()
             original_pts = original_pts[0] if original_pts else None
@@ -241,6 +290,7 @@ def analyze(project, source_id, config=None, progress=None, cancel=None, setup_o
                     job["segments"]+=1
                     trackers=Trackers(params,source["display_width"],source["display_height"],f"{run_id[:8]}s{job['segments']}")
                     temporal=TemporalCandidates();people=[];last_people=-1e9
+                    main_ball=MainBall(scene)
                 reference_path=calibration.get("reference_image")
                 if reference_path:
                     reference=read_image(project.root/reference_path)
@@ -258,6 +308,7 @@ def analyze(project, source_id, config=None, progress=None, cancel=None, setup_o
                     job["segments"]+=1
                     trackers=Trackers(params,source["display_width"],source["display_height"],f"{run_id[:8]}s{job['segments']}")
                     temporal=TemporalCandidates();people=[];last_people=-1e9
+                    main_ball=MainBall(scene if aligned else None)
                 if state["state"] != "stable":
                     project.put("geometry_warning", {"id": f"{run_id}:{t:.3f}", "source_id": source_id, "time": t, **state})
                 if state["state"]=="shifted" and active_camera_session is None:
@@ -269,13 +320,16 @@ def analyze(project, source_id, config=None, progress=None, cancel=None, setup_o
                 last_guard = t
                 last_guard_state=state["state"]
             if t - last_people >= 1/params["people_fps"] - 1e-5:
+                inference_start=time.perf_counter()
                 found = detector.predict(rgb, params["person_threshold"], (1,))
+                timings['people_inference_s']=timings.get('people_inference_s',0)+time.perf_counter()-inference_start
                 polygon = calibration.get("people_roi") if aligned else None
                 excluded = calibration.get("obstacles", []) if aligned else []
                 found = [p for p in found if (not polygon or within(polygon, [(p["bbox"][0]+p["bbox"][2])/2,p["bbox"][3]]))
                          and not any(within(poly, [(p["bbox"][0]+p["bbox"][2])/2,p["bbox"][3]]) for poly in excluded)]
                 people = trackers.update(found, t, "person")
                 last_people = t
+                scene_bindings={}
                 for person in people:
                     person['referee_region_hint']=bool(aligned and calibration.get('referee_region') and
                         within(calibration['referee_region'],[(person['bbox'][0]+person['bbox'][2])/2,(person['bbox'][1]+person['bbox'][3])/2]))
@@ -291,6 +345,7 @@ def analyze(project, source_id, config=None, progress=None, cancel=None, setup_o
                             if write_image(sample_path,cv2.cvtColor(full,cv2.COLOR_RGB2BGR)):
                                 samples.append({'path':project.relpath(sample_path),'time':t,'source_pts':original_pts,'bbox':person['bbox']})
                     binding = project.track_identity(run_id, tid, t)
+                    if binding:scene_bindings[tid]=binding
                     if binding:
                         person.update(player_id=binding.get("player_id"), role=binding["role"])
                     crop=torso(rgb,person['bbox'])
@@ -308,13 +363,22 @@ def analyze(project, source_id, config=None, progress=None, cancel=None, setup_o
                         track["number_consensus"] = consensus(track["ocr_observations"])
                     tracks[tid] = track
                     project.put("track", track)
+                if scene and aligned:
+                    team_memory.update(people,t,scene_bindings)
+                    for person in people:
+                        track=tracks[person['track_id']];track['team_proposal']=person['team_proposal'];project.put('track',track)
+                elif scene:team_memory=TeamMemory(scene)
+            inference_start=time.perf_counter()
             balls = trackers.update(detector.balls(rgb, params, calibration.get("ball_roi") if aligned else None), t, "ball")
+            timings['ball_inference_s']=timings.get('ball_inference_s',0)+time.perf_counter()-inference_start
+            ball_candidates=balls
+            balls,ball_selection=main_ball.select(balls,t)
             for ball in balls:
                 ball['net_region_overlap_hint']=bool(aligned and calibration.get('net_region') and
                     within(calibration['net_region'],[(ball['bbox'][0]+ball['bbox'][2])/2,(ball['bbox'][1]+ball['bbox'][3])/2]))
             ball_samples += 1
             ball_missing += int(not balls)
-            candidate = temporal.update(t, balls, people if t-last_people < 1/params["people_fps"]+0.02 else [], params["ball_max_gap"])
+            candidate = temporal.update(t, balls, [p for p in people if p.get('scene_role')!='referee'] if t-last_people < 1/params["people_fps"]+0.02 else [], params["ball_max_gap"])
             if candidate:
                 e = event(source_id, candidate["time"], "candidate_contact", review="unreviewed", origin="automatic",
                           model_version=model_info["sha256"], visibility="partial", context=candidate,
@@ -325,6 +389,7 @@ def analyze(project, source_id, config=None, progress=None, cancel=None, setup_o
                 project.propose(e, f"{source_id}:contact:{candidate['time']:.3f}")
             observation = {"time": t, "source_pts": original_pts, "people": people if t == last_people else [],
                            "people_sampled": t == last_people, "balls": balls, "ball_missing": not balls,
+                           "ball_candidates":ball_candidates,"ball_selection":ball_selection,
                            "geometry_valid": geometry_ok, "approximate_zones_valid":aligned,
                            "tracking_segment":f"{run_id[:8]}s{job['segments']}",
                            "calibration_id": calibration["id"],"camera_session_id":active_camera_session["id"] if active_camera_session else None}
@@ -336,8 +401,13 @@ def analyze(project, source_id, config=None, progress=None, cancel=None, setup_o
             # Tracks that are no longer live are stored in SQLite, not retained in RAM.
             tracks = {k: v for k, v in tracks.items() if t-v["end"] <= 2}
             if progress:
-                progress(t/max(end, 0.01), f"Люди/мяч/OCR: {t:.1f} с; пропуски мяча {ball_missing}/{ball_samples}")
+                elapsed=max(.001,time.perf_counter()-start_wall);speed=max(0,t-start)/elapsed
+                remaining=f'; примерно {(end-t)/speed/60:.1f} мин осталось' if speed>0 and elapsed>3 else ''
+                progress(t/max(end, 0.01), f"{detector.device.upper()}: {t:.1f}/{end:.1f} с видео; {speed:.2f}×{remaining}; пропуски мяча {ball_missing}/{ball_samples}")
+            iteration_finished=time.perf_counter()
+        identity_start=time.perf_counter()
         second_pass(project,run_id,selected_mode,encoder=detector,read_numbers=params['ocr'],cancel=cancel,progress=progress)
+        timings['identity_s']=timings.get('identity_s',0)+time.perf_counter()-identity_start
         job["state"] = "setup_complete" if setup_only and end < source["duration"] - 0.002 else "complete"
         job["processed_until"] = end
     except Cancelled:
@@ -347,9 +417,11 @@ def analyze(project, source_id, config=None, progress=None, cancel=None, setup_o
         job.update(state="failed", error=str(exc))
         raise
     finally:
+        decoded.close()
         import torch
         job.update(elapsed_s=job.get("elapsed_s", 0)+time.perf_counter()-start_wall, peak_ram_bytes=max_ram,
                    peak_vram_bytes=torch.cuda.max_memory_allocated() if detector.device == "cuda" else None,
+                   timings=timings,
                    resume_policy="new track segment after checkpoint; old identities never assigned by proximity")
         project.put("job", job)
     if not setup_only:

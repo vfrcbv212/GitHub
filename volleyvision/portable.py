@@ -40,7 +40,9 @@ def self_test(bundle, output):
     from .vision import Detector, analyze
     from .identity import NumberOCR
     from .exporting import export_all
-    from .gui import MainWindow,CalibrationDialog
+    from .gui import CalibrationDialog
+    from .simple_ui import SimpleWindow
+    from .quick_setup_ui import SceneDialog
     from .setup_ui import RosterDialog,KitDialog,ScoreDialog
     from .gallery import GalleryDialog
     from .image_io import read_image,write_image
@@ -74,7 +76,7 @@ def self_test(bundle, output):
         export_all(project)
         assert (project.root/'exports'/'automatic'/'report.html').is_file()
     app=W.QApplication.instance() or W.QApplication([]);app.setStyle('Fusion')
-    window=MainWindow(project_root);window.show();app.processEvents()
+    window=SimpleWindow(project_root);window.show();app.processEvents()
     assert window.identification.currentData()=='appearance'
     roster=RosterDialog(window.project,window);roster.show();app.processEvents()
     roster.grab().save(str(output/'roster.png'));roster.close()
@@ -91,6 +93,14 @@ def self_test(bundle, output):
     calibration=CalibrationDialog(window.project,window.source,window.current.rgb)
     calibration.show();app.processEvents();calibration.grab().save(str(output/'calibration.png'));calibration.close()
     gallery=GalleryDialog(window.project,window);gallery.show();app.processEvents();gallery.close()
+    scene=SceneDialog(window.project,window.source,window.current.rgb,window.current.time,window)
+    scene.show();app.processEvents()
+    scene.entries.update(court=[[100,100],[600,100],[600,340],[100,340]],
+        net=[[100,140],[300,150],[600,140],[600,190],[300,200],[100,190]],
+        center=[[100,200],[600,200]],team_a=[[320,280]],team_b=[[320,120]],
+        antenna_a=[[100,140],[100,100]],antenna_b=[[600,140],[600,100]])
+    scene.canvas.redraw();scene.grab().save(str(output/'simple-scene.png'));scene.save()
+    assert window.project.get('scene_setup',window.source['id'])
     export_all(window.project)
     window.grab().save(str(output/'window.png'));window.close();app.processEvents()
     result={'platform':platform.platform(),'python':sys.version,'torch':torch.__version__,
@@ -99,6 +109,7 @@ def self_test(bundle, output):
         'ocr_result':ocr,'synthetic_pipeline':job['state'],'gui_opened':True,
         'numberless_roster_opened':True,'kit_sample_saved':True,'manual_score_saved':True,
         'calibration_and_gallery_opened':True,
+        'simple_ui_opened':True,'optional_scene_saved':True,
         'real_reid_quality':None,'native_windows_verified':False,
         'limits':'Synthetic input; no real volleyball accuracy or NVIDIA test. Execution host is verified separately.'}
     (output/'result.json').write_text(json.dumps(result,ensure_ascii=False,indent=2),encoding='utf-8')

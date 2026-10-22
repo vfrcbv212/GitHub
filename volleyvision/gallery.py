@@ -393,6 +393,11 @@ class GalleryDialog(QtWidgets.QDialog):
                  f"Голоса OCR: {consensus.get('votes', {})}; {consensus.get('reason', 'наблюдений нет')}",
                  "Оценки OCR не являются калиброванными вероятностями; номер не определяет команду."]
         if identity_mode(self.project)=='appearance':lines=['Режим по внешности: номера не используются. Образцы человека сохраняются между выходами из кадра.']
+        proposal=track.get('team_proposal',{})
+        if proposal.get('team_id'):
+            lines.append('Команда траектории: '+self.teams.get(proposal['team_id'],{}).get('name',proposal['team_id'])+
+                         (' — указана пользователем' if proposal.get('evidence')=='confirmed' else ' — предположение')+
+                         '. Личность этим не определяется.')
         for observation in track.get("ocr_observations", [])[-20:]:
             if identity_mode(self.project)=='appearance':break
             lines.append(f"{observation['time']:.3f} с: №{observation.get('number', '?')}, score={observation.get('raw_score', 'нет')}; {observation.get('reason', '')}")

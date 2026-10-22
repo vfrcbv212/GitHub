@@ -8,8 +8,9 @@ import traceback
 bundle = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(bundle / 'app'))
 os.environ['VOLLEYVISION_BUNDLE_ROOT'] = str(bundle)
-os.environ.setdefault('OMP_NUM_THREADS', '2')
-os.environ.setdefault('MKL_NUM_THREADS', '2')
+cpu_workers=str(max(1,min(8,(os.cpu_count() or 2)//2)))
+os.environ.setdefault('OMP_NUM_THREADS', cpu_workers)
+os.environ.setdefault('MKL_NUM_THREADS', cpu_workers)
 try:
     from volleyvision.portable_gpu import selected_packages
     gpu = selected_packages(bundle)

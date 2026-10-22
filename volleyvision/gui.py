@@ -496,7 +496,14 @@ class MainWindow(W.QMainWindow):
                     for d in overlays:
                         d["bbox"]=[x*scale for x in d["bbox"]]
                         b=self.project.track_identity(job["id"],d["track_id"],obs["time"])
-                        d["label"]=(b.get("player_id") if b else None) or d["track_id"][-18:]
+                        if d.get('scene_role')=='referee':d['label']='Судья'
+                        elif b and b.get('player_id'):
+                            card=self.project.get('player',b['player_id']);d['label']=player_label(card) if card else b['player_id']
+                        else:
+                            proposal=d.get('team_proposal',{});team_id=(b or {}).get('team_id') or proposal.get('team_id')
+                            team=self.project.get('team',team_id) if team_id else None
+                            prefix=team['name']+('?' if not b and proposal.get('evidence')!='confirmed' else '')+' · ' if team else ''
+                            d['label']=prefix+d['track_id'][-12:]
                         d["label"]+=f" Δt={obs['time']-frame.time:+.2f}s"
         self.canvas.show_frame(frame.rgb,overlays)
 
@@ -738,5 +745,6 @@ class MainWindow(W.QMainWindow):
 def run(root):
     app=W.QApplication.instance() or W.QApplication([])
     app.setApplicationName("VolleyVision");app.setStyle("Fusion")
-    window=MainWindow(root);window.show()
+    from .simple_ui import SimpleWindow
+    window=SimpleWindow(root);window.show()
     return app.exec()
