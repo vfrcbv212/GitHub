@@ -95,6 +95,10 @@ class SimpleWindow(MainWindow):
             self.message.setText('Сохраните или пропустите разметку добавленных видео');return
         super().analysis(setup_only)
 
+    def closeEvent(self,event):
+        if not self.worker:self._scene_queue=[]
+        super().closeEvent(event)
+
     def choose_source(self):
         super().choose_source()
         self.update_performance()

@@ -90,3 +90,12 @@ def test_performance_panel_follows_selected_video(tmp_path,app):
     window.refresh();window.sources.setCurrentIndex(window.sources.findData(new['id']))
     assert 'появятся после обработки' in window.performance.text()
     window.close()
+
+
+def test_closing_window_cancels_deferred_scene_prompts(tmp_path,app,monkeypatch):
+    root,source=prepared(tmp_path);window=SimpleWindow(root);called=[]
+    monkeypatch.setattr(window,'scene_setup',lambda:called.append(window.source['id']))
+    window._import_before={source['id']}
+    path=root/'media/second.mp4';make_video(path,seconds=.6,vfr=False);import_video(window.project,path)
+    window.done('Импорт завершён');window.close();app.processEvents()
+    assert called==[] and not window._scene_queue
