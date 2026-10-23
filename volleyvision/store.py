@@ -86,6 +86,16 @@ class Project:
         values = [json.loads(r[0]) for r in self.db.execute("SELECT body FROM objects WHERE kind=? ORDER BY rowid", (kind,))]
         return sorted(values,key=lambda source:source.get("offset",0)) if kind=="source" else values
 
+    def record_observation(self, job, observation, tracks=()):
+        """Commit one detection checkpoint, including its tracks, atomically."""
+        track_rows=[('track',track['id'],dumps(track)) for track in tracks]
+        observation_row=(job['id'],job['source_id'],observation['time'],dumps(observation))
+        job_row=('job',job['id'],dumps(job))
+        with self.db:
+            self.db.executemany('INSERT OR REPLACE INTO objects VALUES (?,?,?)',track_rows)
+            self.db.execute('INSERT OR REPLACE INTO observations VALUES (?,?,?,?)',observation_row)
+            self.db.execute('INSERT OR REPLACE INTO objects VALUES (?,?,?)',job_row)
+
     def resolve(self, source, proxy=False):
         key = "proxy" if proxy and source.get("proxy") else "path"
         p = Path(source[key])

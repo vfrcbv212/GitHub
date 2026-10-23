@@ -61,3 +61,32 @@ def test_each_new_import_offers_optional_scene_setup(tmp_path,app,monkeypatch):
     window.done('Импорт завершён');app.processEvents()
     assert called==[other['id']] and window.source['id']==other['id']
     window.close()
+
+
+def test_multiple_imports_offer_each_file_and_failure_does_not_leak_import_state(tmp_path,app,monkeypatch):
+    root,source=prepared(tmp_path);window=SimpleWindow(root);called=[];errors=[]
+    monkeypatch.setattr(window,'scene_setup',lambda:called.append(window.source['id']))
+    monkeypatch.setattr(window,'error',lambda text:errors.append(text))
+    window._import_before={source['id']}
+    for name,seconds in (('second',.6),('third',.8)):
+        path=root/f'media/{name}.mp4';make_video(path,seconds=seconds,vfr=False);import_video(window.project,path)
+    added=[s['id'] for s in window.project.all('source') if s['id']!=source['id']]
+    # A later file failed, but successfully imported parts still need optional setup.
+    window.failed('Cannot open next part')
+    for _ in range(5):app.processEvents()
+    assert errors==['Cannot open next part'] and called==added
+    assert not window._scene_queue and window._import_before is None
+    window.done('Другая операция');app.processEvents();assert called==added
+    window.close()
+
+
+def test_performance_panel_follows_selected_video(tmp_path,app):
+    root,source=prepared(tmp_path);window=SimpleWindow(root)
+    window.project.put('job',{'id':'j','source_id':source['id'],'state':'complete','device':'cpu',
+        'processed_until':source['duration'],'elapsed_s':2,'timings':{'storage_s':.1}})
+    window.refresh();assert 'CPU' in window.performance.text() and 'Сохранение: 0.1' in window.performance.text()
+    window.save_performance();assert (root/'exports/diagnostics/processing.json').exists()
+    path=root/'media/new.mp4';make_video(path,seconds=.8,vfr=False);new=import_video(window.project,path)
+    window.refresh();window.sources.setCurrentIndex(window.sources.findData(new['id']))
+    assert 'появятся после обработки' in window.performance.text()
+    window.close()

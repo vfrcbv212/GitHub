@@ -14,7 +14,7 @@ class SimpleWindow(MainWindow):
     def __init__(self,root):
         super().__init__(root)
         self.setWindowTitle('VolleyVision — видео → разметка → отчёт')
-        self.resize(1320,850);self._import_before=None
+        self.resize(1320,850);self._import_before=None;self._scene_queue=[]
         outer=self.centralWidget().layout();banner=outer.itemAt(0).widget()
         banner.setText('Добавьте видео. При желании отметьте площадку, сетку, мяч и команды. Затем запустите анализ. '
             'Автоматические личности и действия ещё требуют проверки на реальном видео.')
@@ -35,7 +35,11 @@ class SimpleWindow(MainWindow):
             button('Подготовить ускорение NVIDIA',self.prepare_nvidia,layout)
         self.analyze_button=button('Анализировать видео → получить отчёт',lambda:self.analysis(False),layout)
         button('Открыть готовый HTML-отчёт',self.open_report,layout)
+        self.performance=W.QLabel();self.performance.setWordWrap(True);self.performance.setTextInteractionFlags(C.Qt.TextInteractionFlag.TextSelectableByMouse)
+        layout.addWidget(self.performance)
+        button('Сохранить замеры скорости',self.save_performance,layout)
         self.advanced_button.toggled.connect(self.set_advanced);self.set_advanced(False);self.tabs.setCurrentWidget(self.quick)
+        self.update_performance()
 
     def set_advanced(self,enabled):
         for i in range(self.tabs.count()):
@@ -47,12 +51,14 @@ class SimpleWindow(MainWindow):
             self.tabs.setCurrentWidget(self.quick)
 
     def open_project(self):
+        if self.worker:return
+        self._scene_queue=[]
         super().open_project()
         if not self.project.get('identity_config','default'):
             set_identity_mode(self.project,'appearance');self.refresh()
 
     def import_files(self):
-        if self.worker:return
+        if self.worker or self._scene_queue:return
         self._import_before={s['id'] for s in self.project.all('source')}
         super().import_files()
         if not self.worker:self._import_before=None
@@ -62,12 +68,53 @@ class SimpleWindow(MainWindow):
         super().done(result)
         if imported is not None:
             added=[s for s in self.project.all('source') if s['id'] not in imported]
-            if added:
-                self.sources.setCurrentIndex(self.sources.findData(added[0]['id']))
-                C.QTimer.singleShot(0,self.scene_setup)
+            self._scene_queue.extend(s['id'] for s in added)
         elif str(result).startswith('Анализ завершён'):
             for i in range(self.tabs.count()):
                 if self.tabs.tabText(i)=='Отчёт':self.tabs.setCurrentIndex(i);break
+        if self._scene_queue:C.QTimer.singleShot(0,self.offer_next_scene)
+
+    def failed(self,text):
+        imported=self._import_before;self._import_before=None
+        super().failed(text)
+        if imported is not None:
+            self._scene_queue.extend(s['id'] for s in self.project.all('source') if s['id'] not in imported)
+        if self._scene_queue:C.QTimer.singleShot(0,self.offer_next_scene)
+
+    def offer_next_scene(self):
+        if self.worker:return
+        while self._scene_queue:
+            sid=self._scene_queue.pop(0);index=self.sources.findData(sid)
+            if index<0:continue
+            self.sources.setCurrentIndex(index);self.scene_setup()
+            if self._scene_queue:C.QTimer.singleShot(0,self.offer_next_scene)
+            break
+
+    def analysis(self,setup_only):
+        if self._scene_queue:
+            self.message.setText('Сохраните или пропустите разметку добавленных видео');return
+        super().analysis(setup_only)
+
+    def choose_source(self):
+        super().choose_source()
+        self.update_performance()
+
+    def refresh(self):
+        super().refresh()
+        self.update_performance()
+
+    def update_performance(self):
+        if not hasattr(self,'performance'):return
+        from .performance import processing_diagnostics,describe_performance
+        rows=processing_diagnostics(self.project,self.source['id']) if self.source else []
+        self.performance.setText(describe_performance(rows[-1]) if rows else 'Замеры скорости появятся после обработки выбранного видео.')
+
+    def save_performance(self):
+        from .performance import write_diagnostics
+        try:
+            path=write_diagnostics(self.project)
+            self.message.setText('Замеры сохранены: '+str(path))
+        except (ValueError,OSError) as exc:self.error(exc)
 
     def scene_setup(self):
         if self.worker:self.message.setText('Дождитесь текущей операции или отмените её');return

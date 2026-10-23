@@ -216,13 +216,8 @@ def report(project, mode="automatic", filters=None):
             uncertain.append({"event_id": e["id"], "type": e["type"], "included": e["id"] in accepted_ids,
                               "review": e["review"], "missing": missing})
     total = match.get("known_event_total")
-    jobs = project.all("job")
-    latest = {}
-    for job in jobs:
-        latest[job["source_id"]] = job
-    diagnostics = [{k:j.get(k) for k in ("id","source_id","state","samples","ball_samples","ball_missing",
-                   "elapsed_s","peak_ram_bytes","peak_vram_bytes","warning","automation_limit")}
-                   for j in latest.values()]
+    from .performance import processing_diagnostics
+    diagnostics = processing_diagnostics(project)
     from .scoring import score_report
     from .roster import identity_mode
     return {"schema_version": 2, "dictionary_version": "local-1", "match": match, "mode": mode,

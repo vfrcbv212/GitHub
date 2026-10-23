@@ -70,9 +70,11 @@ class Detector:
             limit=max(1,min(int(batch_size),len(indices)));offset=0
             while offset<len(indices):
                 selected=indices[offset:offset+limit]
-                tensors=[torch.from_numpy(np.ascontiguousarray(images[i])).permute(2,0,1)
-                         .to(device=self.device,dtype=torch.float32).div_(255) for i in selected]
+                tensors=[]
                 try:
+                    for i in selected:
+                        tensors.append(torch.from_numpy(np.ascontiguousarray(images[i])).permute(2,0,1)
+                                       .to(device=self.device,dtype=torch.float32).div_(255))
                     with torch.inference_mode():outputs=self.model(tensors)
                 except torch.cuda.OutOfMemoryError:
                     del tensors
@@ -269,7 +271,7 @@ def analyze(project, source_id, config=None, progress=None, cancel=None, setup_o
     active_camera_session=None
     tracks = {}
     process = psutil.Process()
-    max_ram = process.memory_info().rss
+    max_ram = max(job.get('peak_ram_bytes',0),process.memory_info().rss)
     ball_samples, ball_missing = job.get("ball_samples", 0), job.get("ball_missing", 0)
     timings=dict(job.get('timings',{}));iteration_finished=time.perf_counter()
     decoded=prefetch_frames(frames(path,decode_metadata,start=start,end=end,sample_fps=params['ball_fps']),cancel=cancel)
@@ -277,6 +279,7 @@ def analyze(project, source_id, config=None, progress=None, cancel=None, setup_o
         for frame in decoded:
             check_cancel(cancel)
             timings['decode_wait_s']=timings.get('decode_wait_s',0)+time.perf_counter()-iteration_finished
+            sampled_tracks=[]
             rgb, t = frame.rgb, frame.time
             original_pts = project.db.execute("SELECT pts FROM frames WHERE source_id=? AND time>=? ORDER BY time LIMIT 1", (source_id,t-0.002)).fetchone()
             original_pts = original_pts[0] if original_pts else None
@@ -362,12 +365,12 @@ def analyze(project, source_id, config=None, progress=None, cancel=None, setup_o
                         track["ocr_observations"] = track["ocr_observations"][-200:]
                         track["number_consensus"] = consensus(track["ocr_observations"])
                     tracks[tid] = track
-                    project.put("track", track)
                 if scene and aligned:
                     team_memory.update(people,t,scene_bindings)
                     for person in people:
-                        track=tracks[person['track_id']];track['team_proposal']=person['team_proposal'];project.put('track',track)
+                        track=tracks[person['track_id']];track['team_proposal']=person['team_proposal']
                 elif scene:team_memory=TeamMemory(scene)
+                sampled_tracks=[tracks[person['track_id']] for person in people]
             inference_start=time.perf_counter()
             balls = trackers.update(detector.balls(rgb, params, calibration.get("ball_roi") if aligned else None), t, "ball")
             timings['ball_inference_s']=timings.get('ball_inference_s',0)+time.perf_counter()-inference_start
@@ -394,9 +397,9 @@ def analyze(project, source_id, config=None, progress=None, cancel=None, setup_o
                            "tracking_segment":f"{run_id[:8]}s{job['segments']}",
                            "calibration_id": calibration["id"],"camera_session_id":active_camera_session["id"] if active_camera_session else None}
             job.update(last_time=t, samples=job["samples"]+1, ball_samples=ball_samples, ball_missing=ball_missing)
-            with project.db:
-                project.db.execute("INSERT OR REPLACE INTO observations VALUES (?,?,?,?)", (run_id, source_id, t, dumps(observation)))
-                project.db.execute("INSERT OR REPLACE INTO objects VALUES ('job',?,?)", (run_id, dumps(job)))
+            storage_start=time.perf_counter()
+            project.record_observation(job,observation,sampled_tracks)
+            timings['storage_s']=timings.get('storage_s',0)+time.perf_counter()-storage_start
             max_ram = max(max_ram, process.memory_info().rss)
             # Tracks that are no longer live are stored in SQLite, not retained in RAM.
             tracks = {k: v for k, v in tracks.items() if t-v["end"] <= 2}

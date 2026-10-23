@@ -39,6 +39,35 @@ def test_tile_batch_offsets_nms_and_roi_skip_outside_tiles():
     assert seen[-1]==(1,2) and result[0]['bbox']==[410,20,430,40]
 
 
+@pytest.mark.parametrize('failure_stage',['allocation','forward'])
+def test_cuda_oom_retries_allocations_and_forward_without_dropping_images(monkeypatch,failure_stage):
+    import torch
+    original_to=torch.Tensor.to;failed=False;allocations=0;cache_clears=[]
+    def transfer(tensor,*args,**kwargs):
+        nonlocal failed,allocations
+        if kwargs.get('device')=='cuda':
+            allocations+=1
+            if failure_stage=='allocation' and allocations==2 and not failed:
+                failed=True;raise torch.cuda.OutOfMemoryError('test allocation OOM')
+            kwargs['device']='cpu'
+        return original_to(tensor,*args,**kwargs)
+    class Model:
+        transform=SimpleNamespace()
+        def __call__(self,images):
+            nonlocal failed
+            if failure_stage=='forward' and len(images)>1 and not failed:
+                failed=True;raise torch.cuda.OutOfMemoryError('test forward OOM')
+            return [{'boxes':torch.tensor([[float(im[0,0,0]*255),2,8,9]]),
+                     'labels':torch.tensor([37]),'scores':torch.tensor([.8])} for im in images]
+    monkeypatch.setattr(torch.Tensor,'to',transfer)
+    monkeypatch.setattr(torch.cuda,'empty_cache',lambda:cache_clears.append(True))
+    detector=object.__new__(Detector);detector.device='cuda';detector.model=Model()
+    images=[np.full((80,90,3),n,np.uint8) for n in range(4)]
+    results=detector.predict_many(images,.5,(37,),batch_size=4)
+    assert failed and len(cache_clears)==1
+    assert [r[0]['bbox'][0] for r in results]==pytest.approx(list(range(4)))
+
+
 def test_prefetch_keeps_order_propagates_failure_and_closes_producer():
     closed=threading.Event()
     def source():
