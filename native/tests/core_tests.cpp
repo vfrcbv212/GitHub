@@ -160,6 +160,39 @@ static void substituteRegression() {
     t.update(back, 10);
     check(back[0].player == ids[6] && back[0].team == 'A', "side switch changes the returning libero's team");
 }
+static void manualBallAndBench() {
+    BallTracker tracker;
+    auto corrected = tracker.update({}, 0, {}, Point{25, 30});
+    check(corrected && distance(corrected->point, {25, 30}) < .001,
+          "human ball correction ignored when network missed the ball");
+    tracker.reset();
+    auto spectator = person();
+    spectator.active = false;
+    spectator.joints[9] = {{100, 100}, 1};
+    for (int i = 0; i < 20; ++i)
+        check(!tracker.update({{{100, 100}, .99, 10}}, i / 60., {spectator}),
+              "a stationary spare ball held on the bench was treated as the game ball");
+    spectator.active = true;
+    check(bool(tracker.update({{{100, 100}, .99, 10}}, .4, {spectator})),
+          "game ball held by an active player was rejected");
+}
+static void featureBudget() {
+    auto tracker = fixture();
+    int id = tracker.addPlayer('A');
+    tracker.players[id].remember(person().embedding, person().color);
+    int calls = 0;
+    for (int frame = 0; frame < 120; ++frame) {
+        auto p = person();
+        p.embedding.clear();
+        std::vector<Person> rows{p};
+        tracker.update(rows, frame / 60., [&](size_t i) {
+            ++calls;
+            rows[i].embedding = person().embedding;
+        });
+        check(rows[0].player == id, "feature reuse broke a continuously visible identity");
+    }
+    check(calls <= 6, "ReID runs unnecessarily on every healthy frame");
+}
 int main() {
     try {
         identityRegression();
@@ -168,6 +201,8 @@ int main() {
         spectators();
         ballRegression();
         substituteRegression();
+        manualBallAndBench();
+        featureBudget();
         std::cout << "PASS: persistent IDs, 105 losses, seeks, jumps, team calibration, ambiguity, "
                      "simultaneous uniqueness, spectators, spare balls\n";
         return 0;

@@ -9,6 +9,7 @@
 #include <QSqlDatabase>
 #include <QStandardPaths>
 #include <QTemporaryDir>
+#include <QVideoFrame>
 #include <iostream>
 
 using namespace vs;
@@ -104,6 +105,62 @@ static int selfTest(const QString &root) {
     auto output = probe(exported);
     require(output.times.size() == 13, "export dropped or repeated frames");
     require(output.times == info.times, "export changed original CFR timestamps");
+    std::cerr << "check: Qt real video playback and seek\n";
+    {
+        QMediaPlayer media;
+        QAudioOutput audio;
+        QVideoSink sink;
+        media.setAudioOutput(&audio);
+        media.setVideoOutput(&sink);
+        audio.setVolume(0);
+        QEventLoop playback;
+        QString mediaError;
+        int shown = 0;
+        double last = -1;
+        auto framesConnection =
+            QObject::connect(&sink, &QVideoSink::videoFrameChanged, &playback, [&](const QVideoFrame &frame) {
+                if (frame.isValid() && !frame.toImage().isNull()) {
+                    ++shown;
+                    last = frame.startTime() / 1000000.;
+                }
+            });
+        QObject::connect(&media, &QMediaPlayer::errorOccurred, &playback,
+                         [&](QMediaPlayer::Error, const QString &message) {
+                             mediaError = message;
+                             playback.quit();
+                         });
+        QObject::connect(&media, &QMediaPlayer::mediaStatusChanged, &playback,
+                         [&](QMediaPlayer::MediaStatus state) {
+                             if (state == QMediaPlayer::EndOfMedia)
+                                 playback.quit();
+                         });
+        QTimer::singleShot(10000, &playback, &QEventLoop::quit);
+        media.setSource(QUrl::fromLocalFile(source));
+        media.play();
+        playback.exec();
+        media.pause();
+        require(mediaError.isEmpty(), mediaError.toUtf8().constData());
+        require(shown >= 2 && last >= .15, "Qt player did not actually decode and present the video");
+        QObject::disconnect(framesConnection);
+        QEventLoop seeking;
+        bool seeked = false;
+        QObject::connect(&sink, &QVideoSink::videoFrameChanged, &seeking, [&](const QVideoFrame &frame) {
+            double time = frame.startTime() / 1000000.;
+            if (frame.isValid() && time >= .08 && time <= .14 && !frame.toImage().isNull()) {
+                seeked = true;
+                seeking.quit();
+            }
+        });
+        QTimer::singleShot(10000, &seeking, &QEventLoop::quit);
+        media.setPosition(100);
+        media.play();
+        seeking.exec();
+        media.pause();
+        require(seeked, "Qt seek did not present the requested part of the video");
+        media.setPlaybackRate(10);
+        require(std::abs(media.playbackRate() - 10) < .001, "10x playback rate was rejected");
+        media.stop();
+    }
     std::cerr << "check: Qt GUI\n";
     Window window(tmp.path(), root);
     window.show();
@@ -112,7 +169,7 @@ static int selfTest(const QString &root) {
     require(!screenshot.isNull(), "native Qt UI did not render");
     window.close();
     std::cout << "PASS native: ONNX pose/temporal ball/512D ReID/OCR, Unicode seek, 13/13 frames, cache, "
-                 "full export, original CFR timestamps, Qt GUI\n";
+                 "full export, original CFR timestamps, Qt real playback/seek/10x, Qt GUI\n";
     return 0;
 }
 int main(int argc, char **argv) {

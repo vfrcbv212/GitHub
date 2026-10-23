@@ -189,7 +189,8 @@ void Worker::run() {
                                 hardwareEncoder ? "h264_nvenc" : "libx264"};
             args << (hardwareEncoder ? QStringList{"-preset", "p4", "-cq", "20"}
                                      : QStringList{"-preset", "veryfast", "-crf", "19"});
-            args << "-pix_fmt" << "yuv420p" << "-c:a" << "copy" << "-movflags" << "+faststart" << outputPath;
+            args << "-pix_fmt" << "yuv420p" << "-c:a" << "copy" << "-movflags" << "+faststart" << "-shortest"
+                 << outputPath;
             encoder->start(executable("ffmpeg"), args);
             if (!encoder->waitForStarted(10000))
                 throw std::runtime_error("Не удалось запустить экспорт FFmpeg");

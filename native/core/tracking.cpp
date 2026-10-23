@@ -232,12 +232,13 @@ void IdentityTracker::update(std::vector<Person> &people, double now,
             }
         }
         if (!close || best < .18 || now - close->time > .2 || now - close->lastFeature > .65 ||
-            (close->player == 0 && now-close->lastFeature>.25))
+            (close->player == 0 && now - close->lastFeature > .25))
             need = true;
         for (size_t k = 0; k < people.size(); ++k)
-            if (k != j && overlap(people[j].box, people[k].box) > .18 && (!close || now-close->lastFeature>.1))
+            if (k != j && overlap(people[j].box, people[k].box) > .18 &&
+                (!close || now - close->lastFeature > .1))
                 need = true;
-        people[j].readNumber=!close||now-close->lastNumber>.65;
+        people[j].readNumber = !close || now - close->lastNumber > .65;
         if (need && extract)
             extract(j);
     }
@@ -311,7 +312,8 @@ void IdentityTracker::update(std::vector<Person> &people, double now,
         t.color = p.color;
         if (!p.embedding.empty())
             t.lastFeature = now;
-        if(!p.embedding.empty()&&p.readNumber)t.lastNumber=now;
+        if (!p.embedding.empty() && p.readNumber)
+            t.lastNumber = now;
         if (referee && overlap(*referee, p.box) > .42) {
             t.referee = true;
             t.player = 0;
@@ -324,11 +326,12 @@ void IdentityTracker::update(std::vector<Person> &people, double now,
             ++t.insideHits;
         else
             t.insideHits = std::max(0, t.insideHits - 1);
+        p.active = t.insideHits >= 8;
         if (!t.player) {
             char side = sideOf(p.box.foot());
             if (side != '?')
                 t.side = side;
-            auto found = p.embedding.empty()?t.candidates:matchGallery(p, t, now, used);
+            auto found = p.embedding.empty() ? t.candidates : matchGallery(p, t, now, used);
             t.candidates = found;
             if (found.size() == 1 && found[0] > 0) {
                 t.player = found[0];
@@ -402,6 +405,8 @@ void BallTracker::reset() {
 }
 std::optional<Ball> BallTracker::update(std::vector<BallCandidate> c, double now,
                                         const std::vector<Person> &people, std::optional<Point> seed) {
+    if (seed)
+        c.push_back({*seed, 1., 1000.}); // A timestamped human annotation is an observed correction.
     history.push_back({now, c});
     if (history.size() > 3)
         history.erase(history.begin());
@@ -413,10 +418,11 @@ std::optional<Ball> BallTracker::update(std::vector<BallCandidate> c, double now
     }
     auto nearHand = [&](Point p) {
         for (auto &person : people)
-            for (int k : {9, 10})
-                if (person.joints[k].score > .45 &&
-                    distance(p, person.joints[k].p) < std::max(22., person.box.h * .18))
-                    return true;
+            if (person.active && !person.referee)
+                for (int k : {9, 10})
+                    if (person.joints[k].score > .45 &&
+                        distance(p, person.joints[k].p) < std::max(22., person.box.h * .18))
+                        return true;
         return false;
     };
     std::optional<Point> expected;
