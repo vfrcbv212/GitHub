@@ -1,5 +1,6 @@
 #pragma once
 #include "project.h"
+#include <QCheckBox>
 #include <QComboBox>
 #include <QDialog>
 #include <QLabel>
@@ -44,6 +45,7 @@ class Calibration : public QDialog {
     QTableWidget *roster;
     QLabel *status;
     QComboBox *nearTeam;
+    QCheckBox *farDetail;
     QComboBox *mode;
     QComboBox *clothes;
     std::vector<double> times;

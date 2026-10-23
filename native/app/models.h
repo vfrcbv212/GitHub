@@ -8,6 +8,7 @@ class Models {
   public:
     explicit Models(const QString &folder, bool gpu = true);
     std::vector<Person> pose(const QImage &image);
+    std::vector<Person> poseDetailed(const QImage &image, const QJsonObject &geometry, bool detail = true);
     std::vector<std::vector<BallCandidate>> balls(const std::vector<QImage> &images);
     void extract(Person &person, const QImage &image, bool numbered);
     void resetTemporal() {

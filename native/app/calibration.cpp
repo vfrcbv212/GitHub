@@ -166,6 +166,11 @@ Calibration::Calibration(Project &p, double current, QWidget *parent) : QDialog(
     clothes->addItems({"Разная одежда", "Общая форма команды (либеро отдельно)"});
     clothes->setCurrentIndex(project.data["uniform"].toBool() ? 1 : 0);
     side->addWidget(clothes);
+    farDetail = new QCheckBox("Повышать детализацию дальних игроков");
+    farDetail->setChecked(project.data["farDetail"].toBool(true));
+    farDetail->setToolTip("Дополнительный проход по дальней части кадра. Отключение ускоряет анализ, но "
+                          "может увеличить пропуски людей за сеткой.");
+    side->addWidget(farDetail);
     roster = new QTableWidget(0, 7);
     roster->setHorizontalHeaderLabels({"ID", "Команда", "Имя", "Роль", "№", "Образцы", "Состав"});
     roster->setMaximumWidth(540);
@@ -319,6 +324,7 @@ bool Calibration::saveRoster() {
         project.data["nearTeam"] = nearTeam->currentData().toString();
         project.data["numbered"] = mode->currentIndex() == 1;
         project.data["uniform"] = clothes->currentIndex() == 1;
+        project.data["farDetail"] = farDetail->isChecked();
         project.save();
         return true;
     } catch (const std::exception &e) {

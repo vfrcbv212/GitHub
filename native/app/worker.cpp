@@ -19,7 +19,7 @@ QString cacheContract(const Project &p) {
     auto raw = QJsonDocument(QJsonObject{{"source", p.data["sha256"]},
                                          {"geometry", p.data["geometry"]},
                                          {"revision", p.data["revision"]},
-                                         {"contract", 3},
+                                         {"contract", 4},
                                          {"models", p.data["models"]}})
                    .toJson(QJsonDocument::Compact);
     return QCryptographicHash::hash(raw, QCryptographicHash::Sha256).toHex();
@@ -189,8 +189,7 @@ void Worker::run() {
                                 hardwareEncoder ? "h264_nvenc" : "libx264"};
             args << (hardwareEncoder ? QStringList{"-preset", "p4", "-cq", "20"}
                                      : QStringList{"-preset", "veryfast", "-crf", "19"});
-            args << "-pix_fmt" << "yuv420p" << "-c:a" << "copy" << "-movflags" << "+faststart" << "-shortest"
-                 << outputPath;
+            args << "-pix_fmt" << "yuv420p" << "-c:a" << "copy" << "-movflags" << "+faststart" << outputPath;
             encoder->start(executable("ffmpeg"), args);
             if (!encoder->waitForStarted(10000))
                 throw std::runtime_error("Не удалось запустить экспорт FFmpeg");
@@ -328,7 +327,8 @@ void Worker::run() {
                     double time = project.info.times[index];
                     QJsonObject row;
                     if (models) {
-                        auto people = models->pose(images[j]);
+                        auto people = models->poseDetailed(images[j], project.geometry(),
+                                                           project.data["farDetail"].toBool(true));
                         poseTotal += models->poseMs;
                         double before = models->reidMs;
                         int parity = 0;

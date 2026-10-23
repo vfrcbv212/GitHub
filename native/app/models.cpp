@@ -183,6 +183,67 @@ std::vector<Person> Models::pose(const QImage &image) {
     poseMs = timer.nsecsElapsed() / 1e6;
     return people;
 }
+std::vector<Person> Models::poseDetailed(const QImage &image, const QJsonObject &geometry, bool detail) {
+    auto people = pose(image);
+    double total = poseMs;
+    if (!detail || people.size() >= 14)
+        return people;
+    auto line = pointsFromJson(geometry["center"].toArray());
+    double left = image.width() * .18, right = image.width() * .82, top = image.height() * .28,
+           bottom = image.height() * .75;
+    if (line.size() >= 2) {
+        left = std::min(line.front().x, line.back().x);
+        right = std::max(line.front().x, line.back().x);
+        double margin = std::max(60., (right - left) * .18);
+        left -= margin;
+        right += margin;
+        top = std::min(line.front().y, line.back().y) - image.height() * .30;
+        bottom = std::max(line.front().y, line.back().y) + image.height() * .10;
+    }
+    QRect roi = QRectF(left, top, right - left, bottom - top).toAlignedRect().intersected(image.rect());
+    if (roi.width() < 100 || roi.height() < 80)
+        return people;
+    auto extra = pose(image.copy(roi));
+    total += poseMs;
+    for (auto p : extra) {
+        bool clipped = p.box.x < 3 || p.box.y < 3 || p.box.x + p.box.w > roi.width() - 3 ||
+                       p.box.y + p.box.h > roi.height() - 3;
+        p.box.x += roi.x();
+        p.box.y += roi.y();
+        for (auto &joint : p.joints) {
+            joint.p.x += roi.x();
+            joint.p.y += roi.y();
+        }
+        bool duplicate = false;
+        for (auto &q : people) {
+            double w =
+                std::max(0., std::min(p.box.x + p.box.w, q.box.x + q.box.w) - std::max(p.box.x, q.box.x));
+            double h =
+                std::max(0., std::min(p.box.y + p.box.h, q.box.y + q.box.h) - std::max(p.box.y, q.box.y));
+            double coverage = w * h / std::max(1., std::min(p.box.w * p.box.h, q.box.w * q.box.h));
+            int shared = 0;
+            double jointError = 0;
+            for (int j : {0, 5, 6, 11, 12})
+                if (p.joints[j].score > .45 && q.joints[j].score > .45) {
+                    ++shared;
+                    jointError += distance(p.joints[j].p, q.joints[j].p);
+                }
+            bool samePose =
+                shared >= 2 && jointError / shared < std::max(7., std::min(p.box.h, q.box.h) * .10);
+            if (overlap(p.box, q.box) > .55 || (coverage > .65 && samePose)) {
+                // Do not replace a complete body with an ROI-clipped torso.
+                if (!clipped && p.score > q.score + .05 && p.box.h >= q.box.h * .85)
+                    q = std::move(p);
+                duplicate = true;
+                break;
+            }
+        }
+        if (!duplicate)
+            people.push_back(std::move(p));
+    }
+    poseMs = total;
+    return people;
+}
 std::vector<std::vector<BallCandidate>> Models::balls(const std::vector<QImage> &images) {
     if (images.empty() || images.size() > 9)
         throw std::runtime_error("Некорректное окно мяча");
